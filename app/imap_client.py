@@ -3,6 +3,7 @@ conexión: el volumen de uso de un mailserver casero con 2 cuentas no
 justifica mantener un pool de conexiones persistente, y así nos evitamos
 manejar reconexión/expiración de sesiones IMAP en el backend."""
 import imaplib
+import re
 import ssl
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -57,6 +58,72 @@ def verify_login(email: str, password: str) -> None:
     """Levanta ImapAuthError si las credenciales no son válidas."""
     with imap_connection(email, password):
         pass
+
+
+_LIST_LINE_RE = re.compile(r'^\(([^)]*)\)\s+(?:"([^"]*)"|NIL)\s+(.+)$')
+
+# Nombres típicos de la carpeta de enviados según el servidor IMAP: Dovecot
+# con Maildir suele usar "Sent" a secas, pero variantes con namespace
+# ("INBOX.Sent") o de otros MTAs también son comunes.
+_SENT_CANDIDATES = [
+    "Sent",
+    "Sent Messages",
+    "Sent Items",
+    "INBOX.Sent",
+    "INBOX/Sent",
+    "INBOX.Sent Messages",
+]
+
+
+def _parse_list_line(line: str) -> tuple[str, str] | None:
+    match = _LIST_LINE_RE.match(line.strip())
+    if not match:
+        return None
+    flags, _delimiter, name = match.groups()
+    name = name.strip()
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return flags, name
+
+
+def list_folders(email: str, password: str) -> list[str]:
+    with imap_connection(email, password) as conn:
+        status, data = conn.list()
+        if status != "OK":
+            raise ValueError("No se pudo listar las carpetas")
+
+        folders: list[str] = []
+        for raw in data:
+            if raw is None:
+                continue
+            line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+            parsed = _parse_list_line(line)
+            if parsed is None:
+                continue
+            flags, name = parsed
+            if "\\Noselect" in flags:
+                continue
+            folders.append(name)
+        return folders
+
+
+def resolve_special_folders(email: str, password: str) -> dict[str, str | None]:
+    """Devuelve los nombres reales de las carpetas de Inbox y Enviados en este
+    servidor, sin asumir que se llaman literalmente 'INBOX'/'Sent'."""
+    folders = list_folders(email, password)
+    lower_map = {f.lower(): f for f in folders}
+
+    inbox = lower_map.get("inbox", "INBOX")
+
+    sent = None
+    for candidate in _SENT_CANDIDATES:
+        if candidate.lower() in lower_map:
+            sent = lower_map[candidate.lower()]
+            break
+    if sent is None:
+        sent = next((f for f in folders if "sent" in f.lower()), None)
+
+    return {"inbox": inbox, "sent": sent}
 
 
 def _parse_envelope_date(raw_date: str | None) -> str:

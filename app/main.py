@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import auth, messages
+from app.routers import auth, folders, messages
 
 app = FastAPI(title="Webmail API")
 
@@ -19,6 +19,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(folders.router)
 app.include_router(messages.router)
 
 # Estáticos del build de React. En desarrollo esta carpeta puede no existir
