@@ -5,11 +5,11 @@ manejar reconexión/expiración de sesiones IMAP en el backend."""
 import imaplib
 import ssl
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from email.message import Message
-from email.utils import parsedate_to_datetime
+from email.utils import parsedate_to_datetime, parsedate_tz, mktime_tz
 
 from app.config import settings
 from app.tls import internal_mailserver_ssl_context
@@ -60,12 +60,21 @@ def verify_login(email: str, password: str) -> None:
 
 
 def _parse_envelope_date(raw_date: str | None) -> str:
+    """Normaliza el header Date (RFC 2822, con variantes reales de MTAs viejos)
+    a ISO 8601, para que el frontend nunca tenga que mostrar el string crudo."""
     if not raw_date:
         return ""
     try:
         return parsedate_to_datetime(raw_date).isoformat()
     except Exception:
-        return raw_date
+        pass
+    try:
+        tt = parsedate_tz(raw_date)
+        if tt is not None:
+            return datetime.fromtimestamp(mktime_tz(tt), tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    return raw_date
 
 
 def list_messages(email: str, password: str, folder: str = "INBOX", limit: int = 50) -> list[dict]:
@@ -108,15 +117,44 @@ def list_messages(email: str, password: str, folder: str = "INBOX", limit: int =
         return messages
 
 
+def _is_attachment_part(part: Message) -> bool:
+    if part.is_multipart():
+        return False
+    disposition = str(part.get("Content-Disposition") or "")
+    if "attachment" in disposition:
+        return True
+    # Algunos clientes marcan adjuntos como "inline" pero igual traen filename;
+    # si no tiene filename, es contenido del cuerpo (ej. texto/html principal).
+    return part.get_filename() is not None and "inline" not in disposition
+
+
+def _list_attachment_parts(msg: Message) -> list[Message]:
+    if not msg.is_multipart():
+        return []
+    return [part for part in msg.walk() if _is_attachment_part(part)]
+
+
+def _attachment_meta(index: int, part: Message) -> dict:
+    payload = part.get_payload(decode=True) or b""
+    filename = _decode(part.get_filename()) or f"adjunto-{index + 1}"
+    return {
+        "index": index,
+        "filename": filename,
+        "content_type": part.get_content_type(),
+        "size": len(payload),
+    }
+
+
 def _extract_body(msg: Message) -> tuple[str, str | None]:
     body_text = ""
     body_html: str | None = None
 
     if msg.is_multipart():
         for part in msg.walk():
+            if _is_attachment_part(part):
+                continue
             content_type = part.get_content_type()
-            disposition = str(part.get("Content-Disposition") or "")
-            if "attachment" in disposition:
+            if content_type not in ("text/plain", "text/html"):
                 continue
             charset = part.get_content_charset() or "utf-8"
             if content_type == "text/plain" and not body_text:
@@ -148,6 +186,7 @@ def get_message(email: str, password: str, uid: str, folder: str = "INBOX") -> d
         raw = msg_data[0][1]
         msg: Message = message_from_bytes(raw)
         body_text, body_html = _extract_body(msg)
+        attachments = [_attachment_meta(i, part) for i, part in enumerate(_list_attachment_parts(msg))]
 
         return {
             "uid": uid,
@@ -157,4 +196,27 @@ def get_message(email: str, password: str, uid: str, folder: str = "INBOX") -> d
             "date": _parse_envelope_date(msg.get("Date")),
             "body_text": body_text,
             "body_html": body_html,
+            "attachments": attachments,
         }
+
+
+def get_attachment(email: str, password: str, uid: str, index: int, folder: str = "INBOX") -> tuple[bytes, str, str]:
+    """Devuelve (contenido, filename, content_type) del adjunto en la posición `index`."""
+    with imap_connection(email, password) as conn:
+        status, _ = conn.select(folder, readonly=True)
+        if status != "OK":
+            raise ValueError(f"No se pudo abrir la carpeta '{folder}'")
+
+        status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+        if status != "OK" or not msg_data or msg_data[0] is None:
+            raise ValueError("Mensaje no encontrado")
+
+        msg: Message = message_from_bytes(msg_data[0][1])
+        parts = _list_attachment_parts(msg)
+        if index < 0 or index >= len(parts):
+            raise ValueError("Adjunto no encontrado")
+
+        part = parts[index]
+        content = part.get_payload(decode=True) or b""
+        meta = _attachment_meta(index, part)
+        return content, meta["filename"], meta["content_type"]

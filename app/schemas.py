@@ -8,7 +8,7 @@ from pydantic import BaseModel, field_validator
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _validate_email(value: str) -> str:
+def validate_email_format(value: str) -> str:
     if not _EMAIL_RE.match(value):
         raise ValueError("Dirección de email inválida")
     return value
@@ -18,7 +18,7 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-    _validate = field_validator("email")(_validate_email)
+    _validate = field_validator("email")(validate_email_format)
 
 
 class LoginResponse(BaseModel):
@@ -34,6 +34,13 @@ class MessageSummary(BaseModel):
     seen: bool
 
 
+class AttachmentMeta(BaseModel):
+    index: int
+    filename: str
+    content_type: str
+    size: int
+
+
 class MessageDetail(BaseModel):
     uid: str
     sender: str
@@ -42,11 +49,4 @@ class MessageDetail(BaseModel):
     date: str
     body_text: str
     body_html: str | None = None
-
-
-class SendMessageRequest(BaseModel):
-    to: str
-    subject: str
-    body: str
-
-    _validate = field_validator("to")(_validate_email)
+    attachments: list[AttachmentMeta] = []
