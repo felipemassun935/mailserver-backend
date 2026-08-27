@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api/folders", tags=["folders"])
 
 
 @router.get("")
-def get_folders(session: Session = Depends(get_current_session)) -> dict[str, str | None]:
+def get_folders(session: Session = Depends(get_current_session)) -> dict[str, object]:
     """Nombres reales de INBOX y de la carpeta de enviados en este servidor
     (no siempre se llaman literalmente 'INBOX'/'Sent')."""
     try:

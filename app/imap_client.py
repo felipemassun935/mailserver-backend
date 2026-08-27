@@ -72,7 +72,15 @@ _SENT_CANDIDATES = [
     "INBOX.Sent",
     "INBOX/Sent",
     "INBOX.Sent Messages",
+    "Enviados",
+    "INBOX.Enviados",
+    "INBOX/Enviados",
+    "Correo enviado",
+    "INBOX.Correo enviado",
 ]
+
+# Fallback por substring si ningún candidato exacto matchea (ver abajo).
+_SENT_SUBSTRINGS = ("sent", "enviad")
 
 
 def _parse_list_line(line: str) -> tuple[str, str] | None:
@@ -107,7 +115,7 @@ def list_folders(email: str, password: str) -> list[str]:
         return folders
 
 
-def resolve_special_folders(email: str, password: str) -> dict[str, str | None]:
+def resolve_special_folders(email: str, password: str) -> dict[str, object]:
     """Devuelve los nombres reales de las carpetas de Inbox y Enviados en este
     servidor, sin asumir que se llaman literalmente 'INBOX'/'Sent'."""
     folders = list_folders(email, password)
@@ -121,9 +129,13 @@ def resolve_special_folders(email: str, password: str) -> dict[str, str | None]:
             sent = lower_map[candidate.lower()]
             break
     if sent is None:
-        sent = next((f for f in folders if "sent" in f.lower()), None)
+        sent = next(
+            (f for f in folders if any(s in f.lower() for s in _SENT_SUBSTRINGS)), None
+        )
 
-    return {"inbox": inbox, "sent": sent}
+    # "all" queda para poder diagnosticar servidores con nombres de carpeta
+    # que no matchean ningún candidato conocido (ver GET /api/folders).
+    return {"inbox": inbox, "sent": sent, "all": folders}
 
 
 def _parse_envelope_date(raw_date: str | None) -> str:
