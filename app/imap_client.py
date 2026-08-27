@@ -115,27 +115,56 @@ def list_folders(email: str, password: str) -> list[str]:
         return folders
 
 
-def resolve_special_folders(email: str, password: str) -> dict[str, object]:
-    """Devuelve los nombres reales de las carpetas de Inbox y Enviados en este
-    servidor, sin asumir que se llaman literalmente 'INBOX'/'Sent'."""
-    folders = list_folders(email, password)
+def _find_sent_folder(folders: list[str]) -> str | None:
     lower_map = {f.lower(): f for f in folders}
-
-    inbox = lower_map.get("inbox", "INBOX")
-
-    sent = None
     for candidate in _SENT_CANDIDATES:
         if candidate.lower() in lower_map:
-            sent = lower_map[candidate.lower()]
-            break
-    if sent is None:
-        sent = next(
-            (f for f in folders if any(s in f.lower() for s in _SENT_SUBSTRINGS)), None
-        )
+            return lower_map[candidate.lower()]
+    return next((f for f in folders if any(s in f.lower() for s in _SENT_SUBSTRINGS)), None)
+
+
+def resolve_special_folders(email: str, password: str) -> dict[str, object]:
+    """Devuelve los nombres reales de las carpetas de Inbox y Enviados en este
+    servidor, sin asumir que se llaman literalmente 'INBOX'/'Sent'. No crea
+    nada: si el servidor todavía no tiene carpeta de enviados, "sent" queda
+    en None (ver ensure_sent_folder, que sí la crea, para el flujo de envío)."""
+    folders = list_folders(email, password)
+    lower_map = {f.lower(): f for f in folders}
+    inbox = lower_map.get("inbox", "INBOX")
+    sent = _find_sent_folder(folders)
 
     # "all" queda para poder diagnosticar servidores con nombres de carpeta
     # que no matchean ningún candidato conocido (ver GET /api/folders).
     return {"inbox": inbox, "sent": sent, "all": folders}
+
+
+def ensure_sent_folder(email: str, password: str) -> str:
+    """Devuelve la carpeta de enviados, creándola como "Sent" si el servidor
+    todavía no tiene ninguna (Dovecot recién instalado no crea
+    Sent/Drafts/Trash por default; hay que crearlas la primera vez que se
+    necesitan)."""
+    folders = list_folders(email, password)
+    sent = _find_sent_folder(folders)
+    if sent:
+        return sent
+
+    with imap_connection(email, password) as conn:
+        conn.create("Sent")
+        try:
+            conn.subscribe("Sent")
+        except Exception:
+            pass
+    return "Sent"
+
+
+def append_message(email: str, password: str, folder: str, raw_message: bytes) -> None:
+    """Guarda una copia de un mensaje ya enviado por SMTP en una carpeta IMAP
+    (ej. Enviados). El envío por SMTP no deja copia en ningún lado por su
+    cuenta; eso es responsabilidad del cliente de correo."""
+    with imap_connection(email, password) as conn:
+        status, _ = conn.append(folder, "\\Seen", None, raw_message)
+        if status != "OK":
+            raise ValueError(f"No se pudo guardar la copia en '{folder}'")
 
 
 def _parse_envelope_date(raw_date: str | None) -> str:

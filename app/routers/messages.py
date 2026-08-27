@@ -2,7 +2,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import Response
 
 from app.deps import get_current_session
-from app.imap_client import ImapConnectionError, get_attachment, get_message, list_messages
+from app.imap_client import (
+    ImapConnectionError,
+    append_message,
+    ensure_sent_folder,
+    get_attachment,
+    get_message,
+    list_messages,
+)
 from app.schemas import MessageDetail, MessageSummary, validate_email_format
 from app.sessions import Session
 from app.smtp_client import Attachment, SmtpAuthError, send_message
@@ -91,6 +98,15 @@ async def send(
         )
 
     try:
-        send_message(session.email, session.password, to, subject, body, attachments)
+        raw_message = send_message(session.email, session.password, to, subject, body, attachments)
     except SmtpAuthError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Fallo de autenticación SMTP")
+
+    # Guardar la copia en Enviados es best-effort: el mensaje ya salió por
+    # SMTP, así que un fallo acá (IMAP caído, sin permisos, etc.) no debería
+    # hacerle creer al usuario que el envío entero falló.
+    try:
+        sent_folder = ensure_sent_folder(session.email, session.password)
+        append_message(session.email, session.password, sent_folder, raw_message)
+    except Exception:
+        pass

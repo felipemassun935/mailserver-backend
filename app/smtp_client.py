@@ -1,6 +1,7 @@
 """Cliente SMTP contra Postfix (submission, puerto 587 con STARTTLS)."""
 import smtplib
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 
 from app.config import settings
 from app.tls import internal_mailserver_ssl_context
@@ -21,11 +22,19 @@ class Attachment:
 
 def send_message(
     email: str, password: str, to: str, subject: str, body: str, attachments: list[Attachment] | None = None
-) -> None:
+) -> bytes:
+    """Envía el mensaje y devuelve los bytes RFC822 tal como se mandaron, para
+    poder guardar una copia idéntica en la carpeta de Enviados.
+
+    smtplib NO agrega Date/Message-ID por su cuenta (a diferencia de otros
+    clientes SMTP) -- sin esto, la copia guardada en Enviados quedaba sin
+    fecha."""
     msg = EmailMessage()
     msg["From"] = email
     msg["To"] = to
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
     msg.set_content(body)
 
     for attachment in attachments or []:
@@ -47,3 +56,5 @@ def send_message(
         except smtplib.SMTPAuthenticationError as exc:
             raise SmtpAuthError(str(exc)) from exc
         smtp.send_message(msg)
+
+    return msg.as_bytes()
