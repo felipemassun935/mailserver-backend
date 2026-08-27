@@ -1,0 +1,34 @@
+# Deploy sugerido en el homelab (patrón /opt/homelab/<service>/):
+#
+#   /opt/homelab/webmail/
+#     mailserver-backend/   <- este repo
+#     mailserver-frontend/  <- el otro repo, como carpeta hermana
+#     docker-compose.yml    <- copia de este archivo, un nivel arriba de ambos
+#
+# El build.context es ".." (el padre de ambos repos) porque el Dockerfile
+# necesita ver mailserver-frontend/ y mailserver-backend/ al mismo tiempo
+# para producir un único contenedor.
+
+services:
+  webmail:
+    build:
+      context: ..
+      dockerfile: mailserver-backend/Dockerfile
+    container_name: webmail
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      IMAP_HOST: mailserver
+      IMAP_PORT: 993
+      SMTP_HOST: mailserver
+      SMTP_PORT: 587
+      MAIL_DOMAIN: homelab.local
+      SESSION_TTL_HOURS: 8
+    networks:
+      - mailserver-net
+
+networks:
+  mailserver-net:
+    external: true
+    name: mailserver_mailserver-net
